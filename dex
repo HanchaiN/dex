@@ -547,8 +547,11 @@ class Application(DesktopEntry):
                 return
 
         path = self.Path
+        executable = self.Exec
+        if action:
+            executable = Action(owner=self, identifier=action).Exec
         cmd = self._build_cmd(
-            exec_string=self.Exec, needs_terminal=self.Terminal, term=term
+            exec_string=executable, needs_terminal=self.Terminal, term=term
         )
         if not cmd:
             raise ApplicationExecException("Failed to build command string.")
