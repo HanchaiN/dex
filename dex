@@ -393,7 +393,7 @@ class Application(DesktopEntry):
             )
 
     @classmethod
-    def _build_cmd(cls, exec_string:str, needs_terminal=False, term="x-terminal-emulator"):
+    def _build_cmd(cls, exec_string:str, args:tuple[str]|None = None, needs_terminal=False, term="x-terminal-emulator"):
         """
         # test single and multi argument commands
         >>> Application._build_cmd('gvim')
@@ -414,47 +414,61 @@ class Application(DesktopEntry):
         ['test \\\\ " moin', 'test']
         >>> Application._build_cmd(r'"gvim \\\\\\\\ \\`test\\$"')
         ['gvim \\\\ `test$']
-        >>> Application._build_cmd(r'vim ~/.vimrc', True)
+        >>> Application._build_cmd(r'vim ~/.vimrc', needs_terminal=True)
         ['x-terminal-emulator', '-e', 'vim', '~/.vimrc']
-        >>> Application._build_cmd('vim ~/.vimrc', False)
+        >>> Application._build_cmd('vim ~/.vimrc', needs_terminal=False)
         ['vim', '~/.vimrc']
-        >>> Application._build_cmd("vim '~/.vimrc test'", False)
+        >>> Application._build_cmd("vim '~/.vimrc test'", needs_terminal=False)
         ['vim', '~/.vimrc test']
-        >>> Application._build_cmd('vim \\'~/.vimrc " test\\'', False)
+        >>> Application._build_cmd('vim \\'~/.vimrc " test\\'', needs_terminal=False)
         ['vim', '~/.vimrc " test']
-        >>> Application._build_cmd('sh -c \\'vim ~/.vimrc " test\\'', False)
+        >>> Application._build_cmd('sh -c \\'vim ~/.vimrc " test\\'', needs_terminal=False)
         ['sh', '-c', 'vim ~/.vimrc " test']
-        >>> Application._build_cmd("sh -c 'vim ~/.vimrc \\" test\\"'", False)
+        >>> Application._build_cmd("sh -c 'vim ~/.vimrc \\" test\\"'", needs_terminal=False)
         ['sh', '-c', 'vim ~/.vimrc " test"']
 
-        # expand field codes by removing them
-        >>> Application._build_cmd("vim %u", False)
+        # expand field codes by removing them if no argument specified
+        >>> Application._build_cmd("vim %u")
         ['vim']
-        >>> Application._build_cmd("vim ~/.vimrc %u", False)
+        >>> Application._build_cmd("vim ~/.vimrc %u")
         ['vim', '~/.vimrc']
-        >>> Application._build_cmd("vim '%u' ~/.vimrc", False)
+        >>> Application._build_cmd("vim '%u' ~/.vimrc")
         ['vim', '%u', '~/.vimrc']
-        >>> Application._build_cmd("vim %u ~/.vimrc", False)
+        >>> Application._build_cmd("vim %u ~/.vimrc")
         ['vim', '~/.vimrc']
-        >>> Application._build_cmd("vim /%u/.vimrc", False)
+        >>> Application._build_cmd("vim /%u/.vimrc")
         ['vim', '//.vimrc']
-        >>> Application._build_cmd("vim %u/.vimrc", False)
+        >>> Application._build_cmd("vim %u/.vimrc")
         ['vim', '/.vimrc']
-        >>> Application._build_cmd("vim %U/.vimrc", False)
+        >>> Application._build_cmd("vim %U/.vimrc")
         ['vim', '/.vimrc']
-        >>> Application._build_cmd("vim /%U/.vimrc", False)
+        >>> Application._build_cmd("vim /%U/.vimrc")
         ['vim', '//.vimrc']
-        >>> Application._build_cmd("vim %U .vimrc", False)
+        >>> Application._build_cmd("vim %U .vimrc")
         ['vim', '.vimrc']
 
+        # expand field codes
+        >>> Application._build_cmd("vim %u", ['f'])
+        ['vim', 'f']
+        >>> Application._build_cmd("vim ~/.vimrc %u", ['f'])
+        ['vim', '~/.vimrc', 'f']
+        >>> Application._build_cmd("vim %u ~/.vimrc", ['f'])
+        ['vim', 'f', '~/.vimrc']
+        >>> Application._build_cmd("vim /%u/.vimrc", ['f'])
+        ['vim', '/f/.vimrc']
+        >>> Application._build_cmd("vim %u/.vimrc", ['f'])
+        ['vim', 'f/.vimrc']
+        >>> Application._build_cmd("vim %U .vimrc", ['f1', 'f2'])
+        ['vim', 'f1', 'f2', '.vimrc']
+
         # preserved escaped field codes
-        >>> Application._build_cmd("vim \\\\%u ~/.vimrc", False)
+        >>> Application._build_cmd("vim \\\\%u ~/.vimrc")
         ['vim', '%u', '~/.vimrc']
 
         # test for non-valid field codes, they should be preserved
-        >>> Application._build_cmd("vim %x .vimrc", False)
+        >>> Application._build_cmd("vim %x .vimrc")
         ['vim', '%x', '.vimrc']
-        >>> Application._build_cmd("vim %x/.vimrc", False)
+        >>> Application._build_cmd("vim %x/.vimrc")
         ['vim', '%x/.vimrc']
         """
         cmd = []
@@ -466,6 +480,8 @@ class Application(DesktopEntry):
         in_quote = False
         in_singlequote = False
         in_fieldcode = False
+        found_fieldcode = False
+        is_arg_locked = False
 
         for c in _tmp:
             if in_esc:
@@ -474,10 +490,39 @@ class Application(DesktopEntry):
                 if in_fieldcode:
                     in_fieldcode = False
                     if c in ("u", "U", "f", "F"):
-                        # TODO ignore field codes for the moment; at some point
-                        # field codes should be supported
+                        if found_fieldcode:
+                            raise ApplicationExecException(
+                                "Exec value contains more than one %f, %u, %F or %U field code."
+                            )
+                        found_fieldcode = True
                         # strip %-char at the end of the argument
                         _arg = _arg[:-1]
+                        if not args:
+                            # If the application should not open any file
+                            # the %f, %u, %F and %U field codes must be removed from the command line and ignored. 
+                            continue
+                        # TODO Handle args as file path for now.
+                        # args should be URL(s) or file name(s) (including the path)
+                        # If files are not on the local file system (i.e. are on HTTP or FTP locations),
+                        # the files will be copied to the local file system
+                        # and %f will be expanded to point at the temporary file.
+                        if c in ("u", "f"):
+                            if len(args) > 1:
+                                # TODO should probably spawn and execute multiple copies of a program for each selected file
+                                raise ApplicationExecException(
+                                    "Program cannot handle multiple file arguments."
+                                )
+                            _arg += args[0]
+                        if c in ("U", "F"):
+                            if _arg:
+                                raise ApplicationExecException(
+                                    "The %F and %U field codes may only be used as an argument on their own."
+                                )
+                            cmd.extend(args)
+                            is_arg_locked = True
+                        continue
+                    if c == "%":
+                        # %% is replaced with %
                         continue
 
                 if c == '"':
@@ -508,12 +553,17 @@ class Application(DesktopEntry):
                     in_fieldcode = True
 
                 elif c == " " and not (in_quote or in_singlequote):
+                    is_arg_locked = False
                     if not _arg:
                         continue
                     cmd.append(_arg)
                     _arg = ""
                     continue
 
+            if is_arg_locked:
+                raise ApplicationExecException(
+                    "The %F and %U field codes may only be used as an argument on their own."
+                )
             _arg += c
 
         if _arg and not (in_esc or in_quote or in_singlequote):
@@ -523,9 +573,14 @@ class Application(DesktopEntry):
                 "Exec value contains an unbalanced number of quote characters."
             )
 
+        if args and not found_fieldcode:
+            raise ApplicationExecException(
+                "Application cannot open any file."
+            )
+
         return cmd
 
-    def execute(self, action=None, term=None, wait=False, dryrun=False, verbose=False):
+    def execute(self, args=None, action=None, term=None, wait=False, dryrun=False, verbose=False):
         """
         Execute application or, if given, a specific action
         @return	Return subprocess.Popen object
@@ -536,7 +591,7 @@ class Application(DesktopEntry):
                 executable = Action(owner=self, identifier=action).Exec
             if not os.path.isabs(executable):
                 executable = which(executable)
-            if not os.access(executable, mode=os.F_OK | os.X_OK):
+            if executable is None or not os.access(executable, mode=os.F_OK | os.X_OK):
                 if verbose:
                     print(
                         "Ignoring file, TryExec not found or not executable file: %s"
@@ -547,7 +602,7 @@ class Application(DesktopEntry):
 
         path = self.Path
         cmd = self._build_cmd(
-            exec_string=self.Exec, needs_terminal=self.Terminal, term=term
+            exec_string=self.Exec, args=args, needs_terminal=self.Terminal, term=term
         )
         if not cmd:
             raise ApplicationExecException("Failed to build command string.")
@@ -758,28 +813,29 @@ def _run(args):
         print("Dry run, nothing is executed.", file=sys.stderr)
 
     exit_value = 0
-    if not args.files:
+    if args.file is None:
         print("Nothing to execute, no DesktopEntry files specified!", file=sys.stderr)
         parser.print_help()
         exit_value = 1
     else:
-        for f in args.files:
-            try:
-                app = Application(f)
-                app.execute(
-                    action=args.action,
-                    term=args.term,
-                    wait=args.wait,
-                    dryrun=args.dryrun,
-                    verbose=args.verbose,
-                )
-            except ValueError as ex:
-                print(ex, file=sys.stderr)
-            except IOError as ex:
-                print(ex, file=sys.stderr)
-            except Exception as ex:
-                exit_value = 1
-                print("Execution failed: %s%s%s" % (f, os.linesep, ex), file=sys.stderr)
+        f = args.file
+        try:
+            app = Application(f)
+            app.execute(
+                action=args.action,
+                args=args.args,
+                term=args.term,
+                wait=args.wait,
+                dryrun=args.dryrun,
+                verbose=args.verbose,
+            )
+        except ValueError as ex:
+            print(ex, file=sys.stderr)
+        except IOError as ex:
+            print(ex, file=sys.stderr)
+        except Exception as ex:
+            exit_value = 1
+            print("Execution failed: %s%s%s" % (f, os.linesep, ex), file=sys.stderr)
     return exit_value
 
 
@@ -825,7 +881,7 @@ def _property(args):
     Display DesktopEntry property value
     """
     exit_value = 0
-    if not args.files:
+    if args.file is None:
         print("Nothing to parse, no DesktopEntry files specified!", file=sys.stderr)
         parser.print_help()
         exit_value = 1
@@ -849,33 +905,33 @@ def _property(args):
         )
         action_properties = ("Name", "Exec")
         property = args.property[0]
-        for f in args.files:
-            try:
-                app = Application(f)
+        f = args.file
+        try:
+            app = Application(f)
 
-                allowed_properties = properties
-                error_keyword = "Entry"
-                if args.action:
-                    app = Action(owner=app, identifier=args.action)
-                    allowed_properties = action_properties
-                    error_keyword = "Action"
+            allowed_properties = properties
+            error_keyword = "Entry"
+            if args.action:
+                app = Action(owner=app, identifier=args.action)
+                allowed_properties = action_properties
+                error_keyword = "Action"
 
-                if property in allowed_properties:
-                    print(getattr(app, property))
-                else:
-                    exit_value = 1
-                    print(
-                        "'%s' is not a valid Desktop %s property."
-                        % (property, error_keyword),
-                        file=sys.stderr,
-                    )
-            except ValueError as ex:
-                print(ex, file=sys.stderr)
-            except IOError as ex:
-                print(ex, file=sys.stderr)
-            except Exception as ex:
+            if property in allowed_properties:
+                print(getattr(app, property))
+            else:
                 exit_value = 1
-                print("Parse failed: %s%s%s" % (f, os.linesep, ex), file=sys.stderr)
+                print(
+                    "'%s' is not a valid Desktop %s property."
+                    % (property, error_keyword),
+                    file=sys.stderr,
+                )
+        except ValueError as ex:
+            print(ex, file=sys.stderr)
+        except IOError as ex:
+            print(ex, file=sys.stderr)
+        except Exception as ex:
+            exit_value = 1
+            print("Parse failed: %s%s%s" % (f, os.linesep, ex), file=sys.stderr)
     return exit_value
 
 # start execution
@@ -883,7 +939,7 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
-        usage="%(prog)s [options] [DesktopEntryFile [DesktopEntryFile ...]]",
+        usage="%(prog)s [options] [DesktopEntryFile [files ...]]",
         description="dex, DesktopEntry Execution, is a program to generate and execute DesktopEntry files of the type Application",
         epilog="Example usage: list autostart programs: dex -ad",
     )
@@ -901,7 +957,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "-V", "--version", action="version", version="%%(prog)s %s" % __version__
     )
-    parser.add_argument("files", nargs="*", help="DesktopEntry files")
+    parser.add_argument("file", nargs="?", default=None, help="DesktopEntry files")
+    parser.add_argument("args", nargs="*", help="Files/URLs to open")
 
     property = parser.add_argument_group("property")
     property.add_argument(
