@@ -525,7 +525,7 @@ class Application(DesktopEntry):
 
         return cmd
 
-    def execute(self, action=None, term=None, wait=False, dryrun=False, verbose=False):
+    def execute(self, action=None, term=None, dryrun=False, verbose=False):
         """
         Execute application or, if given, a specific action
         @return	Return subprocess.Popen object
@@ -561,8 +561,6 @@ class Application(DesktopEntry):
             return
 
         _execute_fn = subprocess.Popen
-        if wait:
-            _execute_fn = subprocess.run
         if path:
             return _execute_fn(cmd, cwd=path, env=os.environ)
         return _execute_fn(cmd, env=os.environ)
@@ -738,15 +736,20 @@ def _autostart(args):
         print("Dry run, nothing is executed.", file=sys.stderr)
 
     exit_value = 0
+    subprocesses = []
     for app in get_autostart_files(args, verbose=args.verbose):
         try:
-            app.execute(term=args.term, dryrun=args.dryrun, verbose=args.verbose)
+            proc = app.execute(term=args.term, dryrun=args.dryrun, verbose=args.verbose)
+            subprocesses.append(proc)
         except Exception as ex:
             exit_value = 1
             print(
                 "Execution failed: %s%s%s" % (app.filename, os.linesep, ex),
                 file=sys.stderr,
             )
+    if args.wait:
+        for proc in subprocesses:
+            proc.wait()
     return exit_value
 
 
@@ -766,13 +769,14 @@ def _run(args):
         for f in args.files:
             try:
                 app = Application(f)
-                app.execute(
+                proc = app.execute(
                     action=args.action,
                     term=args.term,
-                    wait=args.wait,
                     dryrun=args.dryrun,
                     verbose=args.verbose,
                 )
+                if args.wait:
+                    proc.wait()
             except ValueError as ex:
                 print(ex, file=sys.stderr)
             except IOError as ex:
