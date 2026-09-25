@@ -749,7 +749,8 @@ def _autostart(args):
             )
     if args.wait:
         for proc in subprocesses:
-            proc.wait()
+            if proc:
+                proc.wait()
     return exit_value
 
 
@@ -775,7 +776,7 @@ def _run(args):
                     dryrun=args.dryrun,
                     verbose=args.verbose,
                 )
-                if args.wait:
+                if args.wait and proc:
                     proc.wait()
             except ValueError as ex:
                 print(ex, file=sys.stderr)
